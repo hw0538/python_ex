@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>측정 데이터 대시보드</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#6b7280; --line:#e3e6eb;
+          --ok:#1f7a4d; --ng:#c62828; --ngbg:#fde8e8; --accent:#2f5bd3; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Malgun Gothic","Apple SD Gothic Neo",system-ui,sans-serif;
+         background:var(--bg); color:var(--text); }
+  main { max-width:1100px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:22px; margin:0 0 16px; }
+  #drop { border:2px dashed #aab2c0; border-radius:10px; padding:28px; text-align:center;
+          color:var(--muted); background:var(--card); cursor:pointer; transition:.15s; }
+  #drop.over { border-color:var(--accent); background:#eef3ff; color:var(--accent); }
+  #fileName { margin-top:6px; font-size:13px; }
+  .cards { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:20px 0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .card .label { font-size:13px; color:var(--muted); }
+  .card .num { font-size:30px; font-weight:700; margin-top:4px; font-variant-numeric:tabular-nums; }
+  .card.ok .num { color:var(--ok); } .card.ng .num { color:var(--ng); }
+  .filters { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:12px; }
+  .filters label { font-size:14px; display:flex; gap:6px; align-items:center; }
+  select, button { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:6px; background:#fff; }
+  button { cursor:pointer; }
+  .wrap { overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:10px; }
+  table { border-collapse:collapse; width:100%; font-size:14px; }
+  th, td { padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { background:#eef0f4; text-align:left; position:sticky; top:0; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  tr.fail td { background:var(--ngbg); }
+  .badge { font-weight:700; } .badge.ok { color:var(--ok); } .badge.ng { color:var(--ng); }
+  .empty { padding:24px; text-align:center; color:var(--muted); }
+  button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .charts { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:12px; margin-bottom:16px; }
+  .chart { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .chart h3 { font-size:14px; margin:0 0 4px; }
+  .chart .legend { font-size:12px; color:var(--muted); margin-bottom:6px; }
+  .chart .legend i { display:inline-block; width:10px; height:10px; margin:0 4px 0 8px; vertical-align:-1px; }
+  .chart svg { width:100%; height:auto; display:block; font-size:11px; }
+  @media (max-width:600px){ .cards{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+<main>
+  <h1>측정 데이터 대시보드</h1>
+
+  <div id="drop">
+    CSV 파일을 여기에 끌어다 놓거나 클릭해서 선택하세요
+    <div id="fileName"></div>
+    <input type="file" id="fileInput" accept=".csv,text/csv" hidden>
+  </div>
+
+  <div class="cards">
+    <div class="card"><div class="label">전체</div><div class="num" id="cTotal">0</div></div>
+    <div class="card ok"><div class="label">적합</div><div class="num" id="cPass">0</div></div>
+    <div class="card ng"><div class="label">부적합</div><div class="num" id="cFail">0</div></div>
+  </div>
+
+  <div class="filters">
+    <label>시료명 <select id="fSample"><option value="">전체</option></select></label>
+    <label>항목 <select id="fItem"><option value="">전체</option></select></label>
+    <button id="reset">필터 초기화</button>
+    <span style="margin-left:auto;font-size:14px">마진 정렬
+      <button data-sort="asc">작은 순</button>
+      <button data-sort="desc">큰 순</button>
+      <button data-sort="" class="on">원래 순서</button>
+    </span>
+  </div>
+
+  <div class="charts" id="charts"></div>
+
+  <div class="wrap"><table id="tbl"><thead></thead><tbody></tbody></table>
+    <div class="empty" id="empty">CSV 파일을 불러오면 표가 표시됩니다.</div></div>
+</main>
+
+<script>
+let header = [], rows = [];
+
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('fileInput');
+drop.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => e.target.files[0] && loadFile(e.target.files[0]));
+['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) loadFile(f); });
+// 창 아무 곳에 떨어뜨려도 브라우저가 파일을 열지 않도록
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', e => e.preventDefault());
+
+async function loadFile(file) {
+  const buf = await file.arrayBuffer();
+  let text;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+  catch { text = new TextDecoder('euc-kr').decode(buf); }   // 엑셀 저장 CSV(CP949) 대비
+  text = text.replace(/^﻿/, '');
+  const data = parseCSV(text).filter(r => r.some(c => c.trim() !== ''));
+  if (data.length < 2) { alert('데이터가 없습니다.'); return; }
+  header = data[0].map(h => h.trim());
+  const need = ['시료명','항목','측정값','기준값'];
+  const missing = need.filter(n => !header.includes(n));
+  if (missing.length) { alert('필수 열이 없습니다: ' + missing.join(', ')); return; }
+  rows = data.slice(1).map(r => {
+    const o = {}; header.forEach((h, i) => o[h] = (r[i] ?? '').trim());
+    return evaluate(o);
+  });
+  document.getElementById('fileName').textContent = `불러온 파일: ${file.name} (${rows.length}건)`;
+  fillOptions('fSample', '시료명'); fillOptions('fItem', '항목');
+  render();
+}
+
+// 따옴표 처리 포함 CSV 파서
+function parseCSV(text) {
+  const out = []; let row = [], cell = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) {
+      if (ch === '"') { if (text[i+1] === '"') { cell += '"'; i++; } else q = false; }
+      else cell += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === ',') { row.push(cell); cell = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i+1] === '\n') i++;
+      row.push(cell); out.push(row); row = []; cell = '';
+    } else cell += ch;
+  }
+  if (cell !== '' || row.length) { row.push(cell); out.push(row); }
+  return out;
+}
+
+// 마진 = 기준값 − 측정값, 판정 계산
+function evaluate(o) {
+  const m = parseFloat(o['측정값']), s = parseFloat(o['기준값']);
+  if (isNaN(m) || isNaN(s)) { o._margin = null; o._pass = null; return o; }
+  o._margin = s - m;
+  const kind = o['기준종류'] || '이하';
+  // 이하: 측정값 ≤ 기준값 → 마진 ≥ 0 이면 적합 / 이상: 마진 ≤ 0 이면 적합
+  o._pass = kind.includes('이상') ? o._margin <= 1e-12 : o._margin >= -1e-12;
+  return o;
+}
+
+function fillOptions(id, key) {
+  const sel = document.getElementById(id);
+  const vals = [...new Set(rows.map(r => r[key]))].filter(Boolean);
+  sel.innerHTML = '<option value="">전체</option>' + vals.map(v => `<option>${esc(v)}</option>`).join('');
+}
+
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function decimals(s) { const p = String(s).split('.'); return p[1] ? p[1].length : 0; }
+
+function render() {
+  const fs = document.getElementById('fSample').value, fi = document.getElementById('fItem').value;
+  const view = rows.filter(r => (!fs || r['시료명'] === fs) && (!fi || r['항목'] === fi));
+  if (sortMode) {
+    const k = r => r._margin === null ? Infinity : r._margin;   // 계산 불가 행은 맨 뒤
+    view.sort((a, b) => sortMode === 'asc' ? k(a) - k(b)
+      : (b._margin === null ? -Infinity : b._margin) - (a._margin === null ? -Infinity : a._margin));
+  }
+  renderCharts(view);
+
+  document.getElementById('cTotal').textContent = view.length;
+  document.getElementById('cPass').textContent = view.filter(r => r._pass === true).length;
+  document.getElementById('cFail').textContent = view.filter(r => r._pass === false).length;
+
+  const cols = [...header, '마진', '판정'];
+  document.querySelector('#tbl thead').innerHTML = '<tr>' + cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr>';
+  document.querySelector('#tbl tbody').innerHTML = view.map(r => {
+    const dp = Math.max(decimals(r['측정값']), decimals(r['기준값']));
+    const margin = r._margin === null ? '-' : r._margin.toFixed(dp);
+    const judge = r._pass === null ? '-' :
+      `<span class="badge ${r._pass ? 'ok' : 'ng'}">${r._pass ? '적합' : '부적합'}</span>`;
+    const cells = header.map(h => {
+      const isNum = h !== '번호' && r[h] !== '' && !isNaN(r[h]);
+      return `<td class="${isNum ? 'num' : ''}">${esc(r[h])}</td>`;
+    });
+    return `<tr class="${r._pass === false ? 'fail' : ''}">${cells.join('')}<td class="num">${margin}</td><td>${judge}</td></tr>`;
+  }).join('');
+  document.getElementById('empty').style.display = view.length ? 'none' : 'block';
+  if (!view.length && rows.length) document.getElementById('empty').textContent = '조건에 맞는 데이터가 없습니다.';
+}
+
+// 항목별 막대 차트 (항목마다 단위가 달라 차트를 따로 그림)
+// 막대 = 측정값(부적합은 빨강), 점선 = 기준값
+function renderCharts(view) {
+  const box = document.getElementById('charts');
+  const groups = new Map();
+  view.forEach(r => { if (r._margin !== null) (groups.get(r['항목']) || groups.set(r['항목'], []).get(r['항목'])).push(r); });
+  box.innerHTML = [...groups].map(([item, list]) => {
+    const unit = list[0]['단위'] || '';
+    const vals = list.flatMap(r => [+r['측정값'], +r['기준값']]);
+    let lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
+    const pad = (hi - lo) * 0.08 || 1; hi = hi > 0 ? hi + pad : hi; lo = lo < 0 ? lo - pad : lo;
+    const W = 460, L = 120, R = 50, rowH = 24, T = 8, H = T + list.length * rowH + 20;
+    const x = v => L + (v - lo) / (hi - lo) * (W - L - R);
+    const x0 = x(0);
+    let svg = `<line x1="${x0}" y1="${T}" x2="${x0}" y2="${H-18}" stroke="#9aa3b2"/>`;
+    list.forEach((r, i) => {
+      const m = +r['측정값'], s = +r['기준값'], y = T + i * rowH;
+      const color = r._pass ? '#2f5bd3' : '#c62828';
+      const lab = `${r['시료명']} · ${r['시험주파수(MHz)'] ?? ''}`;
+      svg += `<text x="${L-6}" y="${y+15}" text-anchor="end" fill="#1d2330">${esc(lab)}</text>`;
+      svg += `<rect x="${Math.min(x0, x(m))}" y="${y+4}" width="${Math.max(1, Math.abs(x(m)-x0))}" height="${rowH-8}" fill="${color}" rx="2"><title>측정값 ${esc(r['측정값'])} ${esc(unit)} / 기준값 ${esc(r['기준값'])} / 마진 ${r._margin.toFixed(2)}</title></rect>`;
+      svg += `<line x1="${x(s)}" y1="${y+1}" x2="${x(s)}" y2="${y+rowH-1}" stroke="#111" stroke-width="2" stroke-dasharray="3 2"/>`;
+      const tx = m >= 0 ? x(m) + 4 : x(m) - 4;
+      svg += `<text x="${tx}" y="${y+15}" text-anchor="${m >= 0 ? 'start' : 'end'}" fill="${color}">${esc(r['측정값'])}</text>`;
+    });
+    svg += `<text x="${x(lo)}" y="${H-4}" fill="#6b7280">${+lo.toFixed(2)}</text><text x="${x(hi)}" y="${H-4}" text-anchor="end" fill="#6b7280">${+hi.toFixed(2)}</text>`;
+    return `<div class="chart"><h3>${esc(item)} <span style="color:#6b7280;font-weight:400">(${esc(unit)})</span></h3>
+      <div class="legend"><i style="background:#2f5bd3"></i>측정값(적합)<i style="background:#c62828"></i>측정값(부적합)<i style="border-top:2px dashed #111;height:0"></i>기준값</div>
+      <svg viewBox="0 0 ${W} ${H}">${svg}</svg></div>`;
+  }).join('');
+}
+
+let sortMode = '';
+document.querySelectorAll('[data-sort]').forEach(b => b.addEventListener('click', () => {
+  sortMode = b.dataset.sort;
+  document.querySelectorAll('[data-sort]').forEach(x => x.classList.toggle('on', x === b));
+  render();
+}));
+
+document.getElementById('fSample').addEventListener('change', render);
+document.getElementById('fItem').addEventListener('change', render);
+document.getElementById('reset').addEventListener('click', () => {
+  document.getElementById('fSample').value = ''; document.getElementById('fItem').value = ''; render();
+});
+</script>
+</body>
+</html>
